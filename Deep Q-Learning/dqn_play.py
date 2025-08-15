@@ -3,6 +3,7 @@ import gymnasium as gym
 import argparse
 import numpy as np
 import typing as tt
+import ale_py
 
 import torch
 
@@ -11,7 +12,7 @@ from lib import dqn_model
 
 import collections
 
-DEFAULT_ENV_NAME = "PongNoFrameskip-v4"
+DEFAULT_ENV_NAME = "ALE/Pong-v5"
 
 
 if __name__ == "__main__":
