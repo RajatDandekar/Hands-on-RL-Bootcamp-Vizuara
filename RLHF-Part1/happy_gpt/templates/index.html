@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Positive Tiny Stories | Vizuara RL Bootcamp</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts for a clean, modern look -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* Use the 'Inter' font, a great open-source alternative to Apple's San Francisco font */
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            /* Added a subtle gradient background */
+            background-color: #f0f9ff;
+            background-image: linear-gradient(to bottom, #e0f2fe, #f8fafc);
+        }
+
+        /* Simple CSS animation for the loader */
+        #loader {
+            border: 4px solid #e5e7eb; /* light grey */
+            border-top: 4px solid #6366f1; /* indigo */
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Style for the highlighted words */
+        .highlight {
+            background-color: #fef08a; /* A nice, soft yellow */
+            padding: 1px 3px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body class="text-slate-800">
+
+    <div class="container mx-auto px-4 py-8 md:py-12 max-w-4xl min-h-screen flex flex-col">
+        
+        <header class="text-center mb-10">
+            <h1 class="text-4xl md:text-5xl font-bold text-slate-900 tracking-tight">Positive Tiny Stories GPT</h1>
+            <p class="mt-3 text-lg text-slate-600">A Hands-on Reinforcement Learning Bootcamp Project</p>
+        </header>
+
+        <main class="bg-white/70 backdrop-blur-sm p-6 md:p-8 rounded-xl shadow-lg w-full">
+            <div class="space-y-6">
+                <div>
+                    <label for="prompt" class="block text-sm font-medium text-slate-700 mb-2">Enter your prompt:</label>
+                    <textarea id="prompt" rows="3" class="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150" placeholder="e.g., A lonely robot found a small flower..."></textarea>
+                </div>
+                
+                <div>
+                    <button id="generate-btn" class="w-full bg-indigo-600 text-white font-semibold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200 ease-in-out flex items-center justify-center space-x-2 disabled:bg-slate-400">
+                        <!-- Sparkles Icon -->
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                          <path fill-rule="evenodd" d="M5 2a1 1 0 011 1v1h1a1 1 0 010 2H6v1a1 1 0 01-2 0V6H3a1 1 0 010-2h1V3a1 1 0 011-1zm0 10a1 1 0 011 1v1h1a1 1 0 110 2H6v1a1 1 0 11-2 0v-1H3a1 1 0 110-2h1v-1a1 1 0 011-1zM12 2a1 1 0 011 1v1h1a1 1 0 110 2h-1v1a1 1 0 11-2 0V6h-1a1 1 0 010-2h1V3a1 1 0 011-1zm-1 6a1 1 0 011-1h1a1 1 0 110 2h-1a1 1 0 01-1-1z" clip-rule="evenodd" />
+                        </svg>
+                        <span id="btn-text">Generate Story</span>
+                    </button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Loading Indicator -->
+        <div id="loader-container" class="text-center py-8 hidden flex-col items-center justify-center">
+             <div id="loader"></div>
+             <p class="mt-3 text-slate-500">Generating, please wait...</p>
+        </div>
+
+        <!-- Results Section -->
+        <section id="results" class="mt-8 grid md:grid-cols-2 gap-6 w-full hidden">
+            <div class="model-output bg-sky-50/80 backdrop-blur-sm p-6 rounded-xl shadow-lg border border-sky-200">
+                <h2 class="text-xl font-semibold mb-4 pb-3 border-b border-sky-200 flex items-center text-sky-800">
+                    <!-- Robot Icon -->
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3 text-sky-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M12 6V5m0 14v-1M9 12l-2 2 2 2m6-4l2 2-2 2" /></svg>
+                    Pre-trained Model
+                </h2>
+                <pre id="pretrained_output" class="text-slate-700 whitespace-pre-wrap font-sans"></pre>
+            </div>
+            <div class="model-output bg-teal-50/80 backdrop-blur-sm p-6 rounded-xl shadow-lg border border-teal-200">
+                <h2 class="text-xl font-semibold mb-4 pb-3 border-b border-teal-200 flex items-center text-teal-800">
+                    <!-- Heart Icon -->
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3 text-teal-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" /></svg>
+                    RL Fine-tuned Model
+                </h2>
+                <pre id="rl_output" class="text-slate-700 whitespace-pre-wrap font-sans"></pre>
+            </div>
+        </section>
+
+        <footer class="text-center mt-auto pt-10">
+            <p class="text-slate-500">Powered by <span class="font-semibold text-indigo-600">Vizuara</span></p>
+        </footer>
+    </div>
+
+    <script>
+        const generateBtn = document.getElementById('generate-btn');
+        const btnText = document.getElementById('btn-text');
+        const promptInput = document.getElementById('prompt');
+        const pretrainedOutput = document.getElementById('pretrained_output');
+        const rlOutput = document.getElementById('rl_output');
+        const resultsSection = document.getElementById('results');
+        const loader = document.getElementById('loader-container');
+
+        /**
+         * NEW FUNCTION: Finds and highlights specific words in a block of text.
+         * @param {string} text - The text to process.
+         * @returns {string} - The text with HTML spans for highlighting.
+         */
+        function highlightWords(text) {
+            const wordsToHighlight = [
+                "like", "liked", "love", "loved", "happy", "good", "great", "amazing", 
+                "wonderful", "beautiful", "excellent", "nice", "best", "awesome", 
+                "fantastic", "fun", "enjoy", "enjoyed", "friendly", "kind", 
+                "sweet", "warm", "smile", "laughed", "excited"
+            ];
+            // Create a regular expression to find all whole words, case-insensitively.
+            // The '\\b' ensures we match whole words only (e.g., 'like' but not 'likely').
+            const regex = new RegExp(`\\b(${wordsToHighlight.join('|')})\\b`, 'gi');
+            
+            // Replace found words with a styled span.
+            return text.replace(regex, (match) => `<span class="highlight">${match}</span>`);
+        }
+
+        async function generateText() {
+            const promptText = promptInput.value;
+            if (!promptText) {
+                promptInput.classList.add('animate-bounce');
+                setTimeout(() => promptInput.classList.remove('animate-bounce'), 500);
+                promptInput.focus();
+                return;
+            }
+
+            // --- UI Updates for Loading State ---
+            generateBtn.disabled = true;
+            btnText.innerText = 'Generating...';
+            resultsSection.classList.add('hidden');
+            loader.classList.remove('hidden');
+            loader.classList.add('flex');
+            pretrainedOutput.innerHTML = ''; // Use innerHTML to clear
+            rlOutput.innerHTML = ''; // Use innerHTML to clear
+
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        prompt: promptText,
+                        max_tokens: 500,
+                        temperature: 0.8,
+                        top_k: 30
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server responded with status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // --- Display Results with Highlighting ---
+                // We now use .innerHTML because we are inserting HTML tags (<span>)
+                pretrainedOutput.innerHTML = highlightWords(data.pretrained_output);
+                rlOutput.innerHTML = highlightWords(data.rl_output);
+                resultsSection.classList.remove('hidden');
+
+            } catch (error) {
+                // --- Display Error ---
+                pretrainedOutput.innerText = `An error occurred: ${error.message}`;
+                rlOutput.innerText = 'Please check the console for more details.';
+                resultsSection.classList.remove('hidden');
+                console.error('Error:', error);
+            } finally {
+                // --- Reset UI ---
+                generateBtn.disabled = false;
+                btnText.innerText = 'Generate Story';
+                loader.classList.add('hidden');
+                loader.classList.remove('flex');
+            }
+        }
+        
+        // Add event listener to the button
+        generateBtn.addEventListener('click', generateText);
+
+        // Allow pressing Enter to generate
+        promptInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault(); // Prevent new line
+                generateText();
+            }
+        });
+    </script>
+</body>
+</html>
