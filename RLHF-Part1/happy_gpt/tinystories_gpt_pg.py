@@ -1,0 +1,305 @@
+import copy
+import os
+
+import datasets
+import torch
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from torch.utils.data import Dataset
+from torch.utils.data.dataloader import DataLoader
+
+from mingpt.char_tokenizer import CharTokenizer
+from mingpt.logger import Logger
+from mingpt.model import GPT
+from mingpt.trainer import Trainer
+from mingpt.utils import set_seed
+
+
+class StoryDataset(Dataset):
+    """
+    TinyStories Dataset: https://huggingface.co/datasets/roneneldan/TinyStories
+    """
+    def __init__(self, block_size, split="train", filter_sentiment=None, tokenizer=None):
+        assert split in ["train", "validation"]
+        self.block_size = block_size
+        self.tokenizer = tokenizer
+
+        eot = "⏎" # End of text token
+
+        # Helper function to process and chunk the text examples
+        def chunk_examples(examples):
+            chunks = [(eot + text + eot) for text in examples['text'] if len(text) > 0]
+            return {"content": chunks}
+
+        print(f"Loading TinyStories dataset for split: {split}")
+        dataset = datasets.load_dataset("roneneldan/TinyStories", split=split)
+        
+        # This is the new part: filter the dataset by sentiment for SFT
+        if filter_sentiment:
+            print(f"Filtering dataset for '{filter_sentiment}' sentiment...")
+            sid = SentimentIntensityAnalyzer()
+            def is_positive(example):
+                # We'll consider a story positive if its compound score is > 0.05
+                return sid.polarity_scores(example['text'])['compound'] > 0.05
+            
+            if filter_sentiment == 'positive':
+                dataset = dataset.filter(is_positive)
+            else:
+                # You could add 'negative' or 'neutral' filtering here if needed
+                pass
+            print("Filtering complete.")
+
+        self.dataset = dataset.map(chunk_examples, batched=True, remove_columns=dataset.column_names)
+
+        # Initialize tokenizer from the dataset if not provided
+        if self.tokenizer is None:
+            print("Building a new character tokenizer...")
+            # Limiting the tokenizer to the first 1 million characters for speed
+            token_text_sample = "".join(row["content"] for row in self.dataset.select(range(10000)))
+            self.tokenizer = CharTokenizer(token_text_sample)
+            print("Tokenizer built.")
+
+    def get_vocab_size(self):
+        return self.tokenizer.vocab_size
+
+    def get_block_size(self):
+        return self.block_size
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        chunk = self.dataset[idx]["content"]
+        toks = self.tokenizer(chunk)
+        assert len(toks) > 0
+        if len(toks) >= self.block_size + 1:
+            toks = toks[:self.block_size + 1]
+        else:
+            pad = torch.full((self.block_size + 1,), self.tokenizer.pad_token, dtype=torch.long)
+            pad[:len(toks)] = toks
+            toks = pad
+
+        x = toks[:-1]
+        y = toks[1:].clone()
+        y[y == self.tokenizer.pad_token] = -1
+
+        # Our mask is true for padding/unused tokens
+        # to match the causal masking inside the minGPT model
+        attn_mask = x == self.tokenizer.pad_token
+        return x, y, attn_mask
+
+class SentimentRewardModel:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        # Ensure the VADER lexicon is downloaded
+        try:
+            self.sid = SentimentIntensityAnalyzer()
+        except LookupError:
+            print("Downloading VADER lexicon...")
+            nltk.download('vader_lexicon')
+            self.sid = SentimentIntensityAnalyzer()
+
+
+    def sentiment(self, sentence: str) -> float:
+        # We only care about the 'compound' score which is a normalized, weighted composite score.
+        return self.sid.polarity_scores(sentence)['compound']
+
+    def __call__(self, tokens):
+        bs = tokens.shape[0]
+        rewards = torch.zeros(bs)
+        for i in range(bs):
+            # Decode the tokens back into a sentence
+            sentence = self.tokenizer.decode(tokens[i])
+            # Calculate the sentiment score for the decoded sentence
+            rewards[i] = self.sentiment(sentence)
+
+        return rewards.to(tokens.device)
+
+
+def batch_end_callback(trainer):
+    model = trainer.model
+    # Switch to evaluation mode
+    model.eval()
+
+    # Log training loss
+    trainer.logger.log("Train", trainer.iter_num, trainer.loss.item())
+
+    # Every `log_every` steps, evaluate on the validation set
+    if trainer.iter_num % trainer.config.log_every == 0:
+        with torch.no_grad():
+            total_loss = 0
+            for i, batch in enumerate(valid_loader):
+                x, y, mask = [x.to(trainer.device) for x in batch]
+                logits, loss = model(x, y, attention_mask=mask)
+                total_loss += loss.item()
+
+        val_loss = total_loss / (i+1)
+        trainer.logger.log("Valid", trainer.iter_num, val_loss)
+        print(f"Epoch: {trainer.epoch}, Iteration: {trainer.iter_num}, Train Loss: {trainer.loss.item():.5f}, Validation Loss: {val_loss:.5f}")
+
+    # Every `generate_every` steps, generate a sample text
+    if trainer.iter_num % trainer.config.generate_every == 0:
+        with torch.no_grad():
+            context = train_ds.tokenizer(TEST_PROMPT)[None]
+            x = context.to(trainer.device)
+            y = model.generate(x, 140, temperature=1.0, do_sample=True, top_k=20)[0]
+            completion = train_ds.tokenizer.decode(y)
+            print(f"\n--- SAMPLE GENERATION AT STEP {trainer.iter_num} ---\n{completion}\n---------------------------------\n")
+
+    # Revert model to training mode
+    model.train()
+
+
+if __name__ == '__main__':
+    set_seed(424242)
+
+    # A more appropriate prompt for a story-telling model
+    TEST_PROMPT = "⏎Once upon a time, "
+    block_size = 64 # Increased block size for longer story context
+
+    print("===== STARTING PRETRAINING on TinyStories =====")
+    
+    # Initialize datasets
+    train_ds = StoryDataset(block_size, split='train')
+    valid_ds = StoryDataset(block_size, split='validation', tokenizer=train_ds.tokenizer)
+    end_of_text = train_ds.tokenizer.eot_token
+
+    # Model Configuration
+    model_config = GPT.get_default_config()
+    model_config.model_type = 'gpt-micro'
+    model_config.vocab_size = train_ds.get_vocab_size()
+    model_config.block_size = block_size
+    model = GPT(model_config)
+
+    # Trainer Configuration
+    train_config = Trainer.get_default_config()
+    train_config.learning_rate = 5e-4 # Slightly adjusted learning rate
+    train_config.num_workers = 4 # Use more workers if your machine supports it
+    train_config.log_every = 2000
+    train_config.generate_every = 5000
+    # TinyStories is huge, so 1 epoch is already a lot of training
+    train_config.epochs = 1
+    train_config.compile = True # Use torch.compile for a speedup if available
+    train_config.batch_size = 128 # Increase batch size if GPU memory allows
+
+    trainer = Trainer(train_config, model, train_ds)
+    device = trainer.device
+
+    valid_loader = DataLoader(
+        valid_ds,
+        shuffle=False,
+        batch_size=trainer.config.batch_size * 2,
+        num_workers=train_config.num_workers
+    )
+
+    trainer.set_callback('on_batch_end', batch_end_callback)
+    trainer.run()
+
+    print("\n===== DONE PRETRAINING =====")
+
+    # Save the pretrained model
+    print("\n===== SAVING PRETRAINED MODEL =====")
+    pretrained_ckpt_path = os.path.join(os.path.curdir, "story_gpt_pretrained.pt")
+    torch.save(model.state_dict(), pretrained_ckpt_path)
+    
+    # Generate a sample after pretraining
+    sample_prompt = torch.full((3, 1), end_of_text, dtype=torch.long, device=device)
+    idx = model.generate(sample_prompt, max_new_tokens=80, top_k=30, do_sample=True)
+    for j, generation in enumerate(idx):
+        print(f"Pre-trained Generation {j}:", train_ds.tokenizer.decode(generation))
+
+    trainer.logger.plot({"Loss": ["Train", "Valid"]}, filename='story_gpt_pretrain.png')
+
+    print("\n===== STARTING SUPERVISED FINE-TUNING (SFT) =====")
+
+    # Create new datasets filtered for positive sentiment
+    sft_dataset = StoryDataset(block_size, split='train', filter_sentiment='positive', tokenizer=train_ds.tokenizer)
+    sft_valid = StoryDataset(block_size, split='validation', filter_sentiment='positive', tokenizer=train_ds.tokenizer)
+
+    valid_loader = DataLoader(
+        sft_valid,
+        shuffle=False,
+        batch_size=trainer.config.batch_size * 2,
+        num_workers=train_config.num_workers
+    )
+
+    # Adjust training config for fine-tuning
+    train_config.learning_rate = 1e-4 # Lower learning rate for fine-tuning
+    train_config.epochs = 2 # A couple of epochs on the filtered data is sufficient
+
+    print(f"{len(sft_dataset)} positive stories for SFT")
+    trainer = Trainer(train_config, model, sft_dataset)
+    trainer.set_callback('on_batch_end', batch_end_callback)
+    trainer.run()
+
+    print("\n===== DONE SFT =====")
+    idx = model.generate(sample_prompt, max_new_tokens=80, top_k=30, do_sample=True)
+    for j, generation in enumerate(idx):
+        print(f"SFT Generation {j}:", train_ds.tokenizer.decode(generation))
+
+    trainer.logger.plot({"Loss": ["Train", "Valid"]}, filename='story_gpt_sft.png')
+
+    print("\n===== STARTING REINFORCEMENT LEARNING (RL) =====")
+
+    ref_model = copy.deepcopy(model)
+    ref_model.requires_grad_(False)
+    ref_model.eval()
+    reward_model = SentimentRewardModel(train_ds.tokenizer)
+    
+    # RL parameters
+    batch_size = 64 # Increase batch size for more stable gradients
+    num_iters = 200 # More RL iterations
+    learning_rate = 1e-5 # Very low learning rate for RL
+    grad_norm_clip = 1.0
+    kl_beta = 0.1 # KL penalty coefficient
+
+    model.to(device)
+    logger = Logger()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.95))
+    prompt = torch.full((batch_size, 1), end_of_text, dtype=torch.long, device=device)
+
+    print("Starting RL training loop...")
+    for i in range(num_iters):
+        with torch.no_grad():
+            model.eval()
+            completion = model.generate(prompt, max_new_tokens=block_size, temperature=1.0, do_sample=True, top_k=30)
+            model.train()
+            rewards = reward_model(completion)
+            ref_log_probs = ref_model.log_probs(completion[:, :-1], completion[:, 1:])
+
+        log_probs = model.log_probs(completion[:, :-1], completion[:, 1:])
+        kl = log_probs - ref_log_probs
+        # The score is a combination of the reward and a KL penalty to prevent the model from deviating too far from the reference
+        score = rewards[:, None] - kl_beta * kl
+        score = score.detach()
+
+        # Vanilla Policy Gradient loss
+        pg_loss = -torch.mean(score * log_probs)
+        pg_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_norm_clip)
+        optimizer.step()
+        model.zero_grad(set_to_none=True)
+
+        logger.log("reward", i, rewards.mean().item())
+        logger.log("kl", i, kl.mean().item())
+
+        if i % 10 == 0:
+            print(f"Iter: {i}, Avg reward: {rewards.mean().item():.4f}, KL: {kl.mean().item():.4f}")
+
+        if i % 50 == 0:
+            model.eval()
+            idx = model.generate(sample_prompt, max_new_tokens=80, do_sample=True, top_k=30).cpu()
+            for j, generation in enumerate(idx):
+                print(f"RL Generation {j}:", train_ds.tokenizer.decode(generation))
+            model.train()
+
+    print("\n===== DONE RL =====")
+    idx = model.generate(sample_prompt, max_new_tokens=128, top_k=20, do_sample=True)
+    for j, generation in enumerate(idx):
+        print(f"Final Generation {j}:", train_ds.tokenizer.decode(generation))
+
+    print("\n===== SAVING FINAL MODEL =====")
+    ckpt_path = os.path.join(os.path.curdir, "story_gpt_rl.pt")
+    torch.save(model.state_dict(), ckpt_path)
+
+    logger.plot({"Reward": ["reward"], "KL Divergence": ["kl"]}, filename='story_gpt_rl.png')
