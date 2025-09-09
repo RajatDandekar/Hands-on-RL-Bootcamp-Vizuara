@@ -1,0 +1,5 @@
+I created this visualizer to help people understand the entire RLHF pipeline.
+
+The main difficulty people face in learning RLHF is that they are not able to visualize the entire pipeline since there are multiple components involved. 
+
+This application is intended to solve this problem and give people a complete clarity to understand RLHF
