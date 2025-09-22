@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>RL Agent for Web Scraping</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root { color-scheme: dark light; }
+  body { font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif;
+         margin:0 auto; max-width:1200px; padding:24px; }
+  h1 { margin:0 0 16px; font-size:20px; }
+
+  .row { display:grid; gap:8px; margin:12px 0; }
+  label { font-weight:600; }
+  input, textarea { width:100%; box-sizing:border-box; padding:10px; border-radius:10px; border:1px solid #444; }
+  textarea { min-height:100px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  button { padding:10px 14px; border-radius:10px; border:1px solid #444; cursor:pointer; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .status { font-weight:600; }
+  .muted { opacity:.7; }
+
+  .grid { display:grid; grid-template-columns: 1.2fr 0.8fr; gap:20px; }
+  @media (max-width: 1024px){ .grid { grid-template-columns: 1fr; } }
+
+  /* Panels */
+  .panel { background:#0f0f0f; color:#eee; padding:14px; border-radius:12px; }
+  .answer { white-space:pre-wrap; min-height:150px; }
+  .trace { display:flex; flex-direction:column; gap:10px; }
+
+  /* Tag chips */
+  .chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; margin-right:8px; }
+  .chip.reasoning   { background:#5a4300; color:#ffd466; }   /* amber */
+  .chip.search      { background:#073d5a; color:#8fd3ff; }   /* blue  */
+  .chip.observation { background:#3a0b56; color:#e0b4ff; }   /* purple*/
+  .chip.backtrack   { background:#5a1613; color:#ffb3ab; }   /* red   */
+  .chip.summary     { background:#0c4a4a; color:#8ff2e6; }   /* teal  */
+  .chip.answer      { background:#124d22; color:#b6f1c0; }   /* green */
+
+  /* Trace cards with colored borders */
+  .card { border:1px solid #333; border-left-width:6px; border-radius:12px; overflow:hidden; }
+  .card h3 { margin:0; padding:10px 12px; font-size:14px; background:#161616; display:flex; align-items:center; justify-content:space-between; }
+  .card pre { margin:0; padding:12px; background:#0b0b0b; white-space:pre-wrap; }
+
+  .card.reasoning   { border-left-color:#ffd466; }
+  .card.search      { border-left-color:#8fd3ff; }
+  .card.observation { border-left-color:#e0b4ff; }
+  .card.backtrack   { border-left-color:#ffb3ab; }
+  .card.summary     { border-left-color:#8ff2e6; }
+
+  .small { font-size:12px; }
+  .right { margin-left:auto; }
+  .log { background:#0f0f0f; color:#eee; padding:14px; border-radius:12px; min-height:120px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+  <h1>Agent Thinking...</h1>
+
+  <div class="row">
+    <label for="server">Server URL</label>
+    <input id="server" value="http://127.0.0.1:12333" />
+    <div class="small muted">If using Runpod from your laptop, set to <code>http(s)://&lt;host&gt;:12333</code>.</div>
+  </div>
+
+  <!-- Default system prompt (inline) -->
+  <div class="row">
+    <label for="system">System prompt (included by default)</label>
+    <textarea id="system"></textarea>
+    <div class="small muted">This is sent automatically with your question. You can edit it here.</div>
+  </div>
+
+  <div class="row">
+    <label for="q">User</label>
+    <textarea id="q">Which are the most populated cities in India?</textarea>
+    <div class="toolbar">
+      <button id="send">Send</button>
+      <button id="clear">Clear</button>
+      <button id="copyAns">Copy Answer</button>
+      <span id="status" class="status muted right">Ready</span>
+    </div>
+    <div class="small muted">Tip: press <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> to send.</div>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT: Final Answer -->
+    <div>
+      <div class="row">
+        <div class="toolbar" style="justify-content:space-between;">
+          <div><span class="chip answer">Answer</span></div>
+          <div class="small muted" id="meta"></div>
+        </div>
+        <div id="ans" class="panel answer">—</div>
+      </div>
+
+      <div class="row">
+        <label>Transcript</label>
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Trace -->
+    <div>
+      <div class="row">
+        <div class="toolbar" style="align-items:baseline;">
+          <div>
+            <span class="chip reasoning">reasoning</span>
+            <span class="chip search">search</span>
+            <span class="chip observation">observation</span>
+            <span class="chip backtrack">backtrack</span>
+            <span class="chip summary">summary</span>
+          </div>
+        </div>
+        <div id="trace" class="trace"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // === default system prompt (adapted from your SYSTEM_PROMPT_TOOLS, concise/no Chinese bullets that force extra turns) ===
+  const DEFAULT_SYSTEM = `
+  The user asks a question. First think in your head, then produce the final answer.
+Use the following tags, repeating as needed:
+<reasoning> your step-by-step thinking </reasoning>
+<search> [tool]: keyword1 keyword2 … </search>
+<observation> snippets retrieved from search </observation>
+<backtrack> corrections if you change course </backtrack>
+<summary> brief interim summary if needed </summary>
+<answer> final answer only (no extra Q&A or headers) </answer>
+`.trim();
+
+  const $ = s => document.querySelector(s);
+  const serverEl = $("#server"), sysEl = $("#system"), qEl = $("#q");
+  const statusEl = $("#status"), ansEl = $("#ans"), traceEl = $("#trace"), metaEl = $("#meta"), logEl = $("#log");
+  const copyAnsBtn = $("#copyAns");
+
+  // init default system prompt
+  sysEl.value = DEFAULT_SYSTEM;
+
+  let lastAns = "", spinnerTimer = null, dot = 0;
+
+  function setStatus(t, muted=true){ statusEl.textContent = t; statusEl.classList.toggle("muted", !!muted); }
+  function startSpinner(){
+    stopSpinner();
+    spinnerTimer = setInterval(()=>{ statusEl.classList.remove("muted"); statusEl.textContent = "Agent Thinking" + ".".repeat((dot++%5)+1); }, 400);
+  }
+  function stopSpinner(msg="Ready"){ if(spinnerTimer) clearInterval(spinnerTimer); spinnerTimer=null; setStatus(msg, true); }
+
+  function appendLog(role, text, cls=""){ const p = document.createElement("div"); p.className = cls; p.textContent = `${role}: ${text}`; logEl.appendChild(p); logEl.scrollTop = logEl.scrollHeight; }
+  copyAnsBtn.onclick = ()=> { if (lastAns) navigator.clipboard?.writeText(lastAns); };
+
+  // --- parsing helpers for tagged blocks ---
+  function grabBlocks(raw, tag){
+    const re = new RegExp(`<${tag}>[\\s\\S]*?<\\/${tag}>`, "gi");
+    const blocks = raw.match(re) || [];
+    return blocks.map(s => s.replace(new RegExp(`^<${tag}>|<\\/${tag}>$`, "gi"), "").trim());
+  }
+
+  function renderTrace(raw){
+    traceEl.innerHTML = "";
+    const sections = [
+      ["reasoning","Reasoning","reasoning"],
+      ["search","Search","search"],
+      ["observation","Observation","observation"],
+      ["backtrack","Backtrack","backtrack"],
+      ["summary","Summary","summary"],
+    ];
+    let any=false;
+    for(const [tag,label,cls] of sections){
+      const arr = grabBlocks(raw, tag);
+      arr.forEach((txt,i)=>{
+        any=true;
+        const card = document.createElement("div");
+        card.className = `card ${cls}`;
+        const h3 = document.createElement("h3");
+        h3.innerHTML = `<span>${label} #${i+1}</span><span class="small muted">${txt.length} ch</span>`;
+        const pre = document.createElement("pre");
+        pre.textContent = txt;
+        card.appendChild(h3); card.appendChild(pre);
+        traceEl.appendChild(card);
+      });
+    }
+    if(!any){
+      const card = document.createElement("div");
+      card.className = "card";
+      const h3 = document.createElement("h3"); h3.innerHTML = "<span>Trace</span><span class='small muted'>(no tagged blocks found)</span>";
+      const pre = document.createElement("pre"); pre.textContent = "Model did not emit <reasoning>/<search>/<observation>/<backtrack>/<summary> tags.";
+      card.appendChild(h3); card.appendChild(pre);
+      traceEl.appendChild(card);
+    }
+  }
+
+  function stripAllTags(raw){
+    return raw
+      .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi,"")
+      .replace(/<search>[\s\S]*?<\/search>/gi,"")
+      .replace(/<observation>[\s\S]*?<\/observation>/gi,"")
+      .replace(/<backtrack>[\s\S]*?<\/backtrack>/gi,"")
+      .replace(/<summary>[\s\S]*?<\/summary>/gi,"")
+      .replace(/<\/?answer>/gi,"")
+      .trim();
+  }
+
+  async function send(){
+    const base = serverEl.value.replace(/\/$/, "");
+    const url  = base + "/chat/";
+    const sys  = sysEl.value.trim();
+    const user = qEl.value.trim();
+    if(!user){ qEl.focus(); return; }
+
+    ansEl.textContent = "—";
+    traceEl.innerHTML = "";
+    lastAns = "";
+    setStatus("Sending…", false);
+    startSpinner();
+    const t0 = performance.now();
+
+    try{
+      const res = await fetch(url, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text: (sys ? (sys + " ") : "") + user })
+      });
+      const t1 = performance.now();
+      const elapsed = ((t1 - t0)/1000).toFixed(2) + "s";
+
+      if(!res.ok){
+        const txt = await res.text();
+        ansEl.textContent = `Error ${res.status}: ${txt}`;
+        metaEl.textContent = "";
+        stopSpinner("Failed · " + elapsed);
+        return;
+      }
+
+      const data = await res.json();
+      const raw = (data.result ?? JSON.stringify(data)).trim();
+      // render
+      renderTrace(raw);
+      // show cleaned final answer (inside/outside <answer>)
+      const answerBlocks = grabBlocks(raw, "answer");
+      const finalText = (answerBlocks[0]?.trim()) || stripAllTags(raw) || "(empty)";
+      ansEl.textContent = finalText;
+      lastAns = finalText;
+      metaEl.textContent = "Done · " + elapsed;
+      stopSpinner("Done · " + elapsed);
+      appendLog("User", user);
+      appendLog("BOT", finalText);
+    }catch(e){
+      ansEl.textContent = "Request error: " + (e?.message || e);
+      metaEl.textContent = "";
+      stopSpinner("Failed");
+    }
+  }
+
+  $("#send").onclick = send;
+  $("#clear").onclick = ()=>{ ansEl.textContent="—"; traceEl.innerHTML=""; logEl.innerHTML=""; qEl.value=""; qEl.focus(); setStatus("Ready"); };
+  qEl.addEventListener("keydown", (e)=>{ if((e.ctrlKey||e.metaKey)&&e.key==="Enter") send(); });
+</script>
+</body>
+</html>
