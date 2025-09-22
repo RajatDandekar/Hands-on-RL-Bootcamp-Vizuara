@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Agentic-RAG-R1 — Chat Tester</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { color-scheme: dark light; }
+    body { font: 15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Helvetica,Arial,sans-serif;
+           margin: 0 auto; max-width: 900px; padding: 24px; }
+    h1 { margin: 0 0 16px; font-size: 20px; }
+    .row { display: grid; gap: 8px; margin: 12px 0; }
+    label { font-weight: 600; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px; border: 1px solid #444; }
+    textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    button { padding: 10px 16px; border-radius: 10px; border: 1px solid #444; cursor: pointer; }
+    .toolbar { display:flex; gap:8px; align-items:center; }
+    .status { opacity:.8; font-size: 13px; margin-left: 8px; }
+    .answer { white-space: pre-wrap; background: #111; color:#eee; padding: 14px; border-radius: 10px; min-height: 120px; }
+    .muted { opacity: .7; }
+    .small { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Agentic-RAG-R1 — Chat Tester</h1>
+
+  <div class="row">
+    <label for="server">Server URL</label>
+    <input id="server" value="http://127.0.0.1:12333" />
+    <div class="small muted">If you exposed a public Runpod port, paste it here, e.g. <code>https://&lt;host&gt;:12333</code></div>
+  </div>
+
+  <div class="row">
+    <label for="q">Your question</label>
+    <textarea id="q">Who discovered the Bellman equation?</textarea>
+  </div>
+
+  <div class="toolbar">
+    <button id="ask">Ask</button>
+    <button id="clear">Clear</button>
+    <span id="status" class="status muted"></span>
+  </div>
+
+  <div class="row">
+    <label>Answer</label>
+    <div id="ans" class="answer">—</div>
+  </div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const serverEl = $("#server"), qEl = $("#q"), ansEl = $("#ans"), statusEl = $("#status");
+    const setStatus = (t) => statusEl.textContent = t ?? "";
+
+    async function ask() {
+      const base = serverEl.value.replace(/\/$/, "");
+      const url  = base + "/chat/";
+      const text = qEl.value.trim();
+      if (!text) { qEl.focus(); return; }
+
+      setStatus("Sending…");
+      ansEl.textContent = "Thinking…";
+      const t0 = performance.now();
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ text })
+        });
+        const t1 = performance.now();
+        const elapsed = ((t1 - t0)/1000).toFixed(2) + "s";
+
+        if (!res.ok) {
+          const txt = await res.text();
+          ansEl.textContent = `Error ${res.status}: ${txt}`;
+          setStatus("Failed · " + elapsed);
+          return;
+        }
+
+        const data = await res.json();
+        ansEl.textContent = (data.result || JSON.stringify(data, null, 2)).trim() || "(empty)";
+        setStatus("Done · " + elapsed);
+      } catch (e) {
+        ansEl.textContent = "Request error: " + (e?.message || e);
+        setStatus("Failed");
+      }
+    }
+
+    $("#ask").onclick = ask;
+    $("#clear").onclick = () => { qEl.value = ""; ansEl.textContent = "—"; setStatus(""); qEl.focus(); };
+    qEl.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") ask();
+    });
+  </script>
+</body>
+</html>
